@@ -231,7 +231,10 @@ async def _channel_listener(channel: str, targets: list[str]) -> None:
 # ---------------------------------------------------------------------------
 
 # Suppress ntfy keepalive messages and generic share notifications
-_SKIP_CONTENT_RE = re.compile(r"^(\s*|An? \w+ was shared with you)$", re.IGNORECASE)
+_SKIP_CONTENT_RE = re.compile(
+    r"^(\s*|An? \w+ was shared with you|Files were shared with you|You received a file: .+)$",
+    re.IGNORECASE,
+)
 
 
 async def _dispatcher() -> None:
