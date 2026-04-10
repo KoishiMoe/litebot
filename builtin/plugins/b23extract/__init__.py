@@ -36,8 +36,9 @@ Config keys (all optional, set in .env):
   BILIBILI_FILTER_REJECT_TEXT=            # optional text reply when blocked
   BILIBILI_FILTER_REJECT_IMAGE=           # optional image (URL/path) when blocked
 """
+import re
 
-from nonebot import on_message, require
+from nonebot import on_regex, require
 from nonebot.adapters.onebot.v11 import Bot, Message, MessageEvent, MessageSegment
 from nonebot.log import logger
 from nonebot.plugin import PluginMetadata
@@ -47,7 +48,7 @@ from ...utils.i18n import t
 from .config import _cfg
 from .filter import is_filtered, sender_bypasses_filter
 from .formatter import build_filter_reject_message, build_image_bytes, build_text
-from .parser import BILI_RE, extract_info
+from .parser import BILI_PATTERN, extract_info
 
 require("mute")
 from ..mute import not_muted  # noqa: E402
@@ -76,7 +77,7 @@ __plugin_meta__ = PluginMetadata(
 # Handler
 # ---------------------------------------------------------------------------
 
-_handler = on_message(rule=not_muted() & online("b23extract"), priority=10, block=False)
+_handler = on_regex(pattern=BILI_PATTERN, flags=re.I, rule=not_muted() & online("b23extract"), priority=10, block=False)
 
 
 def _image_with_url_message(png: bytes, title: str, url: str, reply_id: int) -> Message:
@@ -91,8 +92,6 @@ def _image_with_url_message(png: bytes, title: str, url: str, reply_id: int) -> 
 @_handler.handle()
 async def _handle(bot: Bot, event: MessageEvent) -> None:
     text = str(event.message).strip()
-    if not BILI_RE.search(text):
-        return
 
     try:
         info = await extract_info(text)

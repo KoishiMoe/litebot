@@ -29,16 +29,13 @@ _S = {
 # Detection patterns
 # ---------------------------------------------------------------------------
 
-BILI_RE = re.compile(
-    r"(b23\.tv|(bili(22|23|33|2233)\.cn))"  # short domains
-    r"|live\.bilibili\.com"
-    r"|bilibili\.com[/\\](video|read|bangumi|opus)"
-    r"|^(av|cv)(\d+)"
-    r"|^BV([a-zA-Z0-9]{10})+"
-    r"|\[\[QQ小程序\]哔哩哔哩\]"
-    r"|QQ小程序.*哔哩哔哩",
-    re.I,
-)
+BILI_PATTERN = (r"(b23\.tv|(bili(22|23|33|2233)\.cn))"  # short domains
+                r"|live\.bilibili\.com"
+                r"|bilibili\.com[/\\](video|read|bangumi|opus)"
+                r"|^(av|cv)(\d+)"
+                r"|^BV([a-zA-Z0-9]{10})+"
+                r"|\[\[QQ小程序\]哔哩哔哩\]"
+                r"|QQ小程序.*哔哩哔哩")
 
 _SHORT_URL_RE = re.compile(
     r"(b23\.tv|(bili(?:22|23|33|2233)\.cn))\\\\?/[A-Za-z0-9]+", re.I
@@ -62,10 +59,10 @@ async def _resolve_short_url(url: str) -> str:
     try:
         async with aiohttp.ClientSession() as session:
             async with session.get(
-                url,
-                headers=_BILI_HEADERS,
-                timeout=aiohttp.ClientTimeout(total=15),
-                allow_redirects=True,
+                    url,
+                    headers=_BILI_HEADERS,
+                    timeout=aiohttp.ClientTimeout(total=15),
+                    allow_redirects=True,
             ) as resp:
                 return str(resp.url)
     except Exception as exc:
@@ -143,9 +140,9 @@ async def _parse_video(text: str, credential: Credential) -> Optional[dict[str, 
             "description": desc,
             "url": url,
             "stats": {
-                "view":     int(stat.get("view",     0)),
-                "like":     int(stat.get("like",     0)),
-                "coin":     int(stat.get("coin",     0)),
+                "view": int(stat.get("view", 0)),
+                "like": int(stat.get("like", 0)),
+                "coin": int(stat.get("coin", 0)),
                 "favorite": int(stat.get("favorite", 0)),
             },
         }
