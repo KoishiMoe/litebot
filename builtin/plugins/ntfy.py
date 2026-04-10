@@ -2,7 +2,7 @@
 ntfy.py – Forward messages from ntfy.sh channels to QQ groups/users.
 
 Listens to configured ntfy channels via WebSocket and relays text and
-image/video attachments to QQ groups or private users.
+image attachments to QQ groups or private users.
 
 Architecture
 ------------
@@ -24,7 +24,6 @@ Config keys (all optional unless noted, set in .env):
   NTFY_SERVER=https://ntfy.sh          # ntfy server base URL
   NTFY_TOKEN=                          # Bearer token for authenticated servers
   NTFY_RECONNECT_INTERVAL=10           # seconds between reconnect attempts
-  NTFY_CACHE_CLEAN_INTERVAL=60         # minutes between media-cache sweeps
   NTFY_TO_QQ_MAPPING=[]               # list of {ntfy_channel, qq_targets} dicts
                                        # qq_targets: "group_<id>" or "user_<id>"
   NTFY_ATTACHMENT_HOST_MAPPING={}      # substitute download hosts for attachments
@@ -32,10 +31,7 @@ Config keys (all optional unless noted, set in .env):
 
 import asyncio
 import json
-import os
 import re
-import tempfile
-from pathlib import Path
 from typing import Any
 
 import aiohttp
@@ -93,7 +89,6 @@ class _Config(BaseModel):
     ntfy_server: str = "https://ntfy.sh"
     ntfy_token: str = ""
     ntfy_reconnect_interval: int = 10
-    ntfy_cache_clean_interval: int = 60
     ntfy_to_qq_mapping: list[dict[str, Any]] = []
     ntfy_attachment_host_mapping: dict[str, str] = {}
 
@@ -106,6 +101,7 @@ _cfg = get_plugin_config(_Config)
 
 _TARGET_GROUP_PREFIX = "group_"
 _TARGET_USER_PREFIX = "user_"
+_QQ_IMAGE_MAX_BYTES = 30 * 1024 * 1024  # QQ rejects images larger than 30 MB
 
 # ---------------------------------------------------------------------------
 # Runtime state
@@ -113,7 +109,6 @@ _TARGET_USER_PREFIX = "user_"
 
 _plugin_logger = logger.bind(name="ntfy")
 _session: aiohttp.ClientSession | None = None
-_media_cache_dir: tempfile.TemporaryDirectory | None = None
 
 # Queue items:
 #   _inbound_queue : tuple[dict, list[str]]         – (ntfy_data, target_list)
@@ -141,9 +136,8 @@ def _get_bot():
 
 @driver.on_startup
 async def _startup() -> None:
-    global _session, _media_cache_dir
+    global _session
     _session = aiohttp.ClientSession()
-    _media_cache_dir = tempfile.TemporaryDirectory()
 
     if not _cfg.ntfy_to_qq_mapping:
         _plugin_logger.info("[ntfy] No NTFY_TO_QQ_MAPPING configured; listener inactive.")
@@ -175,7 +169,6 @@ async def _startup() -> None:
 
     _all_tasks.append(asyncio.create_task(_dispatcher(), name="ntfy-dispatcher"))
     _all_tasks.append(asyncio.create_task(_error_reporter(), name="ntfy-error-reporter"))
-    _all_tasks.append(asyncio.create_task(_cache_cleaner(), name="ntfy-cache-cleaner"))
 
     _plugin_logger.info(
         f"[ntfy] Started {sum(1 for t in _all_tasks if 'listener' in t.get_name())} "
@@ -189,8 +182,6 @@ async def _shutdown() -> None:
         task.cancel()
     if _session:
         await _session.close()
-    if _media_cache_dir:
-        _media_cache_dir.cleanup()
 
 
 # ---------------------------------------------------------------------------
@@ -277,16 +268,13 @@ async def _build_message(data: dict[str, Any]) -> Message | None:
     if attachment:
         url: str = attachment.get("url", "")
         mime: str = attachment.get("type", "")
+        size: int = attachment.get("size", 0)
         if url:
-            if mime.startswith("image/") or mime.startswith("video/"):
-                file_path = await _download_media(url)
-                if file_path:
-                    if mime.startswith("image/"):
-                        with open(file_path, "rb") as _f:
-                            segments.append(MessageSegment.image(_f.read()))
-                    else:
-                        with open(file_path, "rb") as _f:
-                            segments.append(MessageSegment.video(_f.read()))
+            if mime.startswith("image/") and size <= _QQ_IMAGE_MAX_BYTES:
+                media_bytes = await _download_media(url)
+                # ntfy set size as 0 if the file is a third-party url and doesn't know the size, so we check the actual bytes length here as well
+                if media_bytes is not None and len(media_bytes) <= _QQ_IMAGE_MAX_BYTES:
+                    segments.append(MessageSegment.image(media_bytes))
                 else:
                     segments.append(MessageSegment.text(f"{t(_S["attachment_prefix"])}{url}"))
             else:
@@ -389,22 +377,12 @@ async def _error_reporter() -> None:
 # ---------------------------------------------------------------------------
 
 
-async def _download_media(url: str) -> str | None:
-    if not _media_cache_dir:
-        return None
+async def _download_media(url: str) -> bytes | None:
     for src, dst in _cfg.ntfy_attachment_host_mapping.items():
         if url.startswith(src):
             url = url.replace(src, dst, 1)
             break
     try:
-        # Strip query string, take only the final path component, and remove any
-        # directory separators to prevent path traversal out of the cache dir.
-        raw_name = os.path.basename(url.split("?")[0])
-        file_name = re.sub(r"[/\\]", "_", raw_name) or "attachment"
-        cache_root = Path(_media_cache_dir.name).resolve()
-        dest = (cache_root / file_name).resolve()
-        # Guard: ensure the resolved destination is inside the cache directory
-        dest.relative_to(cache_root)
         async with _session.get(
             url, timeout=aiohttp.ClientTimeout(total=60)
         ) as resp:
@@ -413,29 +391,8 @@ async def _download_media(url: str) -> str | None:
                     f"[ntfy] Failed to download {url}: HTTP {resp.status}"
                 )
                 return None
-            with open(dest, "wb") as f:
-                async for chunk in resp.content.iter_chunked(65536):
-                    f.write(chunk)
-        return str(dest)
+            return await resp.read()
     except Exception as exc:
         _plugin_logger.error(f"[ntfy] Error downloading {url}: {exc}")
         return None
-
-
-async def _cache_cleaner() -> None:
-    interval_seconds = _cfg.ntfy_cache_clean_interval * 60
-    while True:
-        await asyncio.sleep(interval_seconds)
-        if not _media_cache_dir:
-            return
-        cache = Path(_media_cache_dir.name)
-        removed = 0
-        for item in cache.iterdir():
-            try:
-                if item.is_file():
-                    item.unlink()
-                    removed += 1
-            except Exception as exc:
-                _plugin_logger.error(f"[ntfy] Error removing cached file {item}: {exc}")
-        _plugin_logger.info(f"[ntfy] Cache sweep complete; removed {removed} file(s).")
 
