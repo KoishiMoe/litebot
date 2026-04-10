@@ -12,6 +12,7 @@ from bilibili_api import (
     article as bili_article,
     bangumi as bili_bangumi,
     live as bili_live,
+    opus as bili_opus,
     video as bili_video,
 )
 from bilibili_api import Credential
@@ -31,7 +32,7 @@ _S = {
 BILI_RE = re.compile(
     r"(b23\.tv|(bili(22|23|33|2233)\.cn))"  # short domains
     r"|live\.bilibili\.com"
-    r"|bilibili\.com[/\\](video|read|bangumi)"
+    r"|bilibili\.com[/\\](video|read|bangumi|opus)"
     r"|^(av|cv)(\d+)"
     r"|^BV([a-zA-Z0-9]{10})+"
     r"|\[\[QQ小程序\]哔哩哔哩\]"
@@ -244,11 +245,25 @@ async def _parse_bangumi(text: str, credential: Credential) -> Optional[dict[str
         elif epid_m:
             epid = int(epid_m.group(1))
             ep = bili_bangumi.Episode(epid=epid, credential=credential)
-            ep_data, _ = await ep.get_episode_info()
-            title = ep_data.get("h1Title", "")
-            media_info = ep_data.get("mediaInfo", {}) or {}
-            desc = media_info.get("evaluate", "")
-            cover = media_info.get("cover", "")
+            ep_data, dtype = await ep.get_episode_info()
+            if dtype == bili_bangumi.InitialDataType.NEXT_DATA:
+                # Current response format: data under props.pageProps.dehydratedState.queries
+                queries = (
+                    ep_data.get("props", {})
+                    .get("pageProps", {})
+                    .get("dehydratedState", {})
+                    .get("queries", [])
+                )
+                data = queries[0].get("state", {}).get("data", {}) if queries else {}
+                title = data.get("season_title") or data.get("title", "")
+                desc = data.get("evaluate", "")
+                cover = data.get("cover", "")
+            else:
+                # Legacy INITIAL_STATE format
+                title = ep_data.get("h1Title", "")
+                media_info = ep_data.get("mediaInfo", {}) or {}
+                desc = media_info.get("evaluate", "")
+                cover = media_info.get("cover", "")
             url = f"https://www.bilibili.com/bangumi/play/ep{epid}"
             return {
                 "type": "bangumi", "title": title, "author": "",
@@ -287,6 +302,57 @@ async def _parse_article(text: str, credential: Credential) -> Optional[dict[str
         return None
 
 
+async def _parse_opus(text: str, credential: Credential) -> Optional[dict[str, Any]]:
+    opus_m = re.search(r"bilibili\.com[/\\]opus[/\\](\d+)", text, re.I)
+    if not opus_m:
+        return None
+    opus_id = int(opus_m.group(1))
+    try:
+        opus = bili_opus.Opus(opus_id=opus_id, credential=credential)
+        info = await opus.get_info()
+        item = info.get("item", {})
+        basic = item.get("basic", {})
+        article_type = basic.get("article_type", -1)
+        rid_str = basic.get("rid_str", "0")
+
+        title = ""
+        author_name = ""
+        author_mid = 0
+        first_image = ""
+
+        for mod in item.get("modules", []):
+            mt = mod.get("module_type", "")
+            if mt == "MODULE_TYPE_TITLE":
+                title = mod.get("module_title", {}).get("text", "")
+            elif mt == "MODULE_TYPE_AUTHOR":
+                a = mod.get("module_author", {})
+                author_name = a.get("name", "")
+                author_mid = int(a.get("mid") or 0)
+            elif mt == "MODULE_TYPE_CONTENT" and not first_image:
+                for para in mod.get("module_content", {}).get("paragraphs", []):
+                    if para.get("para_type") == 2:
+                        pics = para.get("pic", {}).get("pics", [])
+                        if pics:
+                            first_image = pics[0].get("url", "")
+                            break
+
+        # CV-backed articles link to their canonical CV URL
+        if article_type == 0 and rid_str and rid_str != "0":
+            url = f"https://www.bilibili.com/read/cv{rid_str}"
+        else:
+            url = f"https://www.bilibili.com/opus/{opus_id}"
+
+        return {
+            "type": "article", "title": title, "author": author_name,
+            "uploader_uid": author_mid,
+            "author_avatar": "", "cover_url": first_image, "category": "",
+            "tags": [], "description": "", "url": url,
+        }
+    except Exception as exc:
+        logger.warning(f"[b23extract] Opus parse error: {exc}")
+        return None
+
+
 # ---------------------------------------------------------------------------
 # Router
 # ---------------------------------------------------------------------------
@@ -314,6 +380,11 @@ async def extract_info(text: str) -> Optional[dict[str, Any]]:
 
     if re.search(r"bilibili\.com[/\\]read|cv\d+", text, re.I):
         result = await _parse_article(text, credential)
+        if result:
+            return result
+
+    if re.search(r"bilibili\.com[/\\]opus", text, re.I):
+        result = await _parse_opus(text, credential)
         if result:
             return result
 
