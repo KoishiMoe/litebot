@@ -57,9 +57,12 @@ require("service")
 from ..service import online, register  # noqa: E402
 
 _S = {
-    "service_desc": {"en": "Parse Bilibili links/IDs and reply with media info cards", "zh": "解析哔哩哔哩链接/编号并回复信息卡"},
-    "meta_desc": {"en": "Parse Bilibili links/IDs and reply with media info", "zh": "解析哔哩哔哩链接/编号并回复媒体信息"},
-    "meta_usage": {"en": "Just send a Bilibili link, AV/BV/CV number, or mini-app share.", "zh": "直接发送 Bilibili 链接、AV/BV/CV 编号或小程序分享即可。"},
+    "service_desc": {"en": "Parse Bilibili links/IDs and reply with media info cards",
+                     "zh": "解析哔哩哔哩链接/编号并回复信息卡"},
+    "meta_desc": {"en": "Parse Bilibili links/IDs and reply with media info",
+                  "zh": "解析哔哩哔哩链接/编号并回复媒体信息"},
+    "meta_usage": {"en": "Just send a Bilibili link, AV/BV/CV number, or mini-app share.",
+                   "zh": "直接发送 Bilibili 链接、AV/BV/CV 编号或小程序分享即可。"},
     "fetch_failed": {"en": "Failed to fetch post info: {error}", "zh": "获取稿件信息失败：{error}"},
     "fetch_network": {"en": "Failed to fetch post info: network error", "zh": "获取稿件信息失败：网络错误"},
     "fetch_unexpected": {"en": "Failed to fetch post info: unexpected error", "zh": "获取稿件信息失败：未知错误"},
@@ -97,7 +100,8 @@ async def _handle(bot: Bot, event: MessageEvent) -> None:
         info = await extract_info(text)
     except ResponseCodeException as exc:
         logger.info(f"[b23extract] API error: {exc}")
-        await _handler.finish(message=MessageSegment.reply(event.message_id) + Message(t(_S["fetch_failed"], error=exc)))
+        await _handler.finish(message=MessageSegment.reply(event.message_id) + Message(
+            t(_S["fetch_failed"], error=f"接口返回错误代码：{exc.code}，信息：{exc.msg}。")))
         return
     except NetworkException as exc:
         logger.error(f"[b23extract] Network error: {exc}")
@@ -125,7 +129,8 @@ async def _handle(bot: Bot, event: MessageEvent) -> None:
     if mode == "on":
         try:
             png = await build_image_bytes(info)
-            await bot.send(event=event, message=_image_with_url_message(png, info["title"], info["url"], event.message_id))
+            await bot.send(event=event,
+                           message=_image_with_url_message(png, info["title"], info["url"], event.message_id))
         except Exception as exc:
             logger.error(f"[b23extract] Image generation failed (mode=on): {exc}")
             await _handler.finish(message=MessageSegment.reply(event.message_id) + Message(build_text(info)))
@@ -142,7 +147,8 @@ async def _handle(bot: Bot, event: MessageEvent) -> None:
     if info.get("cover_url"):
         try:
             png = await build_image_bytes(info)
-            await bot.send(event=event, message=_image_with_url_message(png, info["title"], info["url"], event.message_id))
+            await bot.send(event=event,
+                           message=_image_with_url_message(png, info["title"], info["url"], event.message_id))
             return
         except Exception as exc:
             logger.warning(
