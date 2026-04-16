@@ -206,6 +206,25 @@ def _emoji_size_for_font(font: ImageFont.FreeTypeFont | ImageFont.ImageFont) -> 
         return 16
 
 
+def _emoji_y_offset_for_font(
+    font: ImageFont.FreeTypeFont | ImageFont.ImageFont,
+    emoji_size: int,
+) -> float:
+    """Return vertical offset from text origin for emoji placement.
+
+    The text origin is treated as ``anchor='la'`` (left, ascender).  We align the
+    emoji box to the visual center of a representative glyph box and then nudge it
+    slightly upward to avoid appearing lower than adjacent text.
+    """
+    try:
+        top, bottom = font.getbbox("Ay")[1], font.getbbox("Ay")[3]
+    except Exception:
+        top, bottom = 0, emoji_size
+    centered = (top + bottom - emoji_size) / 2
+    # Small optical correction: bitmap emoji usually look ~1 px lower at this size.
+    return centered - 1.0
+
+
 def text_width_with_emoji(
     text: str,
     font: ImageFont.FreeTypeFont | ImageFont.ImageFont,
@@ -280,15 +299,7 @@ def draw_text_with_emoji(
     emoji_size = _emoji_size_for_font(font)
     x, y = float(xy[0]), float(xy[1])
 
-    # Compute how far the top of a capital glyph sits below the Pillow drawing
-    # origin (anchor="la", i.e. the ascender line).  For most fonts this is a
-    # small positive offset (1–4 px); we use it to align the emoji top with the
-    # cap-height top rather than the ascender, preventing emoji from appearing
-    # slightly higher than adjacent text.
-    try:
-        bbox_top = font.getbbox("A")[1]
-    except Exception:
-        bbox_top = 0
+    emoji_y_offset = _emoji_y_offset_for_font(font, emoji_size)
 
     # Convert "lm" (left, middle) to effective "la" (left, ascender) baseline.
     if anchor == "lm":
@@ -308,9 +319,11 @@ def draw_text_with_emoji(
             if png_path is not None:
                 emoji_img = _load_emoji_png(png_path, emoji_size)
                 if emoji_img is not None:
-                    # Offset by bbox_top so the emoji top aligns with the text
-                    # cap-height top, not the (slightly higher) ascender line.
-                    canvas.paste(emoji_img, (int(x), int(y) + bbox_top), emoji_img)
+                    canvas.paste(
+                        emoji_img,
+                        (int(x), int(y + emoji_y_offset)),
+                        emoji_img,
+                    )
             x += emoji_size
         else:
             if token:
