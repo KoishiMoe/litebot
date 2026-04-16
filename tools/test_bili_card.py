@@ -74,11 +74,11 @@ def main() -> None:
         choices=["regular", "medium", "bold"],
         help="Requested font weight for TTC/OTC collections",
     )
-    parser.add_argument("--view", type=int, default=None, help="Video view count")
-    parser.add_argument("--like", type=int, default=None, help="Video like count")
-    parser.add_argument("--coin", type=int, default=None, help="Video coin count")
-    parser.add_argument("--favorite", type=int, default=None, help="Video favorite count")
-    parser.add_argument("--online", type=int, default=None, help="Live online count")
+    parser.add_argument("--view", type=int, default=8000000, help="Video view count")
+    parser.add_argument("--like", type=int, default=514000, help="Video like count")
+    parser.add_argument("--coin", type=int, default=168000, help="Video coin count")
+    parser.add_argument("--favorite", type=int, default=201000, help="Video favorite count")
+    parser.add_argument("--online", type=int, default=8270, help="Live online count")
     parser.add_argument(
         "--post-time",
         default="1915459199",

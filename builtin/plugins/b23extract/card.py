@@ -375,7 +375,7 @@ async def build_bili_card(
 
     # Stats bar: views · likes · coins · favorites  (video)  or  online (live)
     if has_stats:
-        draw.text((SIDE_PAD, y), stats_text, font=f_stats, fill=C_STATS)
+        draw_text_with_emoji(card, draw, (SIDE_PAD, y), stats_text, f_stats, C_STATS)
         y += GAP + LH_STATS
 
     y += SECTION
@@ -471,19 +471,19 @@ def _format_stats(stats: Optional[dict[str, int]], post_time: Optional[int | flo
 
     post_time_text = _format_post_time(post_time)
     if post_time_text:
-        parts.append(f"⏱ {post_time_text}")
+        parts.append(f"🕒 {post_time_text}")
 
     if stats:
         if "view" in stats and stats["view"] > 0:
-            parts.append(f"▶ {_fmt_num(stats['view'])}")
+            parts.append(f"▶️ {_fmt_num(stats['view'])}")
         if "like" in stats and stats["like"] > 0:
-            parts.append(f"♥ {_fmt_num(stats['like'])}")
+            parts.append(f"👍 {_fmt_num(stats['like'])}")
         if "coin" in stats and stats["coin"] > 0:
-            parts.append(f"＄ {_fmt_num(stats['coin'])}")
+            parts.append(f"🪙 {_fmt_num(stats['coin'])}")
         if "favorite" in stats and stats["favorite"] > 0:
-            parts.append(f"★ {_fmt_num(stats['favorite'])}")
+            parts.append(f"⭐ {_fmt_num(stats['favorite'])}")
         if "online" in stats and stats["online"] > 0:
-            parts.append(f"● {_fmt_num(stats['online'])} 在线")
+            parts.append(f"🟢 {_fmt_num(stats['online'])} 在线")
 
     return "   ".join(parts)
 
