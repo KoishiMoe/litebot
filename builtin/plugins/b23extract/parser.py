@@ -81,6 +81,36 @@ async def _resolve_short_url(url: str) -> str:
 #   tags          : list[str]
 #   description   : str  (full, untruncated)
 #   url           : str  (canonical URL)
+#   post_time     : int  (unix timestamp in seconds, optional)
+
+
+def _coerce_timestamp(value: Any) -> Optional[int]:
+    """Convert known timestamp-like values to unix seconds."""
+    if value is None:
+        return None
+
+    if isinstance(value, (int, float)):
+        ts = int(value)
+    elif isinstance(value, str) and value.strip().isdigit():
+        ts = int(value.strip())
+    else:
+        return None
+
+    # Some API fields are in milliseconds.
+    if ts > 10_000_000_000:
+        ts //= 1000
+    return ts if ts > 0 else None
+
+
+def _extract_timestamp(data: Optional[dict[str, Any]], *keys: str) -> Optional[int]:
+    """Pick the first valid timestamp-like value from a mapping."""
+    if not isinstance(data, dict):
+        return None
+    for key in keys:
+        ts = _coerce_timestamp(data.get(key))
+        if ts:
+            return ts
+    return None
 
 
 async def _parse_video(text: str, credential: Credential) -> Optional[dict[str, Any]]:
@@ -113,7 +143,7 @@ async def _parse_video(text: str, credential: Credential) -> Optional[dict[str, 
     tags: list[str] = []
     try:
         raw_tags = await vid.get_tags()
-        tags = [t.get("tag_name", "") for t in raw_tags if t.get("tag_name")]
+        tags = [tag_obj.get("tag_name", "") for tag_obj in raw_tags if tag_obj.get("tag_name")]
     except Exception as exc:
         logger.debug(f"[b23extract] get_tags failed (non-fatal): {exc}")
 
@@ -126,6 +156,7 @@ async def _parse_video(text: str, credential: Credential) -> Optional[dict[str, 
         return None
 
     stat = info.get("stat", {})
+    post_time = _extract_timestamp(info, "pubdate", "pub_time", "publish_time", "ctime")
     return {
         "type": "video",
         "title": title,
@@ -143,6 +174,7 @@ async def _parse_video(text: str, credential: Credential) -> Optional[dict[str, 
             "coin": int(stat.get("coin", 0)),
             "favorite": int(stat.get("favorite", 0)),
         },
+        "post_time": post_time,
     }
 
 
@@ -208,6 +240,7 @@ async def _parse_bangumi(text: str, credential: Credential) -> Optional[dict[str
             "uploader_uid": 0,
             "author_avatar": "", "cover_url": cover, "category": "",
             "tags": [], "description": desc, "url": url,
+            "post_time": _extract_timestamp(media, "pub_time", "publish_time", "ctime"),
         }
 
     elif ssid_m:
@@ -228,12 +261,14 @@ async def _parse_bangumi(text: str, credential: Credential) -> Optional[dict[str
             "uploader_uid": 0,
             "author_avatar": "", "cover_url": cover, "category": "",
             "tags": [], "description": desc, "url": url,
+            "post_time": _extract_timestamp(ov, "pub_time", "publish_time", "ctime"),
         }
 
     elif epid_m:
         epid = int(epid_m.group(1))
         ep = bili_bangumi.Episode(epid=epid, credential=credential)
         ep_data, dtype = await ep.get_episode_info()
+        post_time_source: Optional[dict[str, Any]] = None
         if dtype == bili_bangumi.InitialDataType.NEXT_DATA:
             # Current response format: data under props.pageProps.dehydratedState.queries
             queries = (
@@ -246,18 +281,21 @@ async def _parse_bangumi(text: str, credential: Credential) -> Optional[dict[str
             title = data.get("season_title") or data.get("title", "")
             desc = data.get("evaluate", "")
             cover = data.get("cover", "")
+            post_time_source = data
         else:
             # Legacy INITIAL_STATE format
             title = ep_data.get("h1Title", "")
             media_info = ep_data.get("mediaInfo", {}) or {}
             desc = media_info.get("evaluate", "")
             cover = media_info.get("cover", "")
+            post_time_source = media_info
         url = f"https://www.bilibili.com/bangumi/play/ep{epid}"
         return {
             "type": "bangumi", "title": title, "author": "",
             "uploader_uid": 0,
             "author_avatar": "", "cover_url": cover, "category": "",
             "tags": [], "description": desc, "url": url,
+            "post_time": _extract_timestamp(post_time_source, "pub_time", "publish_time", "ctime"),
         }
 
     return None
@@ -282,6 +320,7 @@ async def _parse_article(text: str, credential: Credential) -> Optional[dict[str
         "uploader_uid": author_uid,
         "author_avatar": "", "cover_url": cover, "category": "",
         "tags": [], "description": "", "url": url,
+        "post_time": _extract_timestamp(read_info, "publish_time", "pub_time", "ctime"),
     }
 
 
@@ -330,6 +369,7 @@ async def _parse_opus(text: str, credential: Credential) -> Optional[dict[str, A
         "uploader_uid": author_mid,
         "author_avatar": "", "cover_url": first_image, "category": "",
         "tags": [], "description": "", "url": url,
+        "post_time": _extract_timestamp(basic, "publish_time", "pub_time", "ctime"),
     }
 
 

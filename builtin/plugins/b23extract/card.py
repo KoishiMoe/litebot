@@ -39,6 +39,7 @@ from __future__ import annotations
 
 import io
 import asyncio  # Pycharm shows unused import???
+from datetime import datetime
 from typing import Any, Optional
 
 try:
@@ -127,6 +128,7 @@ async def build_bili_card(
     description: str = "",
     url: str,
     stats: Optional[dict[str, int]] = None,
+    post_time: Optional[int | float | str] = None,
     desc_max_lines: int = 12,
     font_path: str = "",
     font_weight: str = "medium",
@@ -161,6 +163,9 @@ async def build_bili_card(
         * ``"online"`` – live-stream current viewer count.
 
         When provided a compact stats bar is rendered below the chips row.
+    post_time:
+        Optional publish timestamp. Supports unix seconds / milliseconds, or
+        preformatted datetime text.
     desc_max_lines:
         Maximum number of description lines rendered in the card.
         ``0`` means unlimited (use carefully for very long descriptions).
@@ -200,7 +205,7 @@ async def build_bili_card(
     inner_w = CARD_W - 2 * SIDE_PAD
 
     # ── Build stats label (no extra API call – uses data already fetched) ─────
-    stats_text = _format_stats(stats)
+    stats_text = _format_stats(stats, post_time)
     has_stats = bool(stats_text)
 
     # ── Measure content so we can allocate the canvas up front ───────────────
@@ -420,21 +425,66 @@ def _fmt_num(n: int) -> str:
     return str(n)
 
 
-def _format_stats(stats: Optional[dict[str, int]]) -> str:
-    """Return a compact single-line stats string, or empty string if no data."""
-    if not stats:
+def _format_post_time(post_time: Optional[int | float | str]) -> str:
+    """Normalize a publish-time value to ``YYYY-MM-DD HH:MM`` when possible."""
+    if post_time is None:
         return ""
+
+    if isinstance(post_time, (int, float)):
+        ts = float(post_time)
+    elif isinstance(post_time, str):
+        value = post_time.strip()
+        if not value:
+            return ""
+        if value.isdigit():
+            ts = float(value)
+        else:
+            try:
+                dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
+                return dt.strftime("%Y-%m-%d %H:%M")
+            except ValueError:
+                for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y-%m-%d", "%Y/%m/%d %H:%M:%S", "%Y/%m/%d"):
+                    try:
+                        dt = datetime.strptime(value, fmt)
+                        return dt.strftime("%Y-%m-%d %H:%M")
+                    except ValueError:
+                        continue
+                return value
+    else:
+        return ""
+
+    if ts > 10_000_000_000:
+        ts /= 1000.0
+
+    if ts <= 0:
+        return ""
+
+    try:
+        return datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M")
+    except (OverflowError, OSError, ValueError):
+        return ""
+
+
+def _format_stats(stats: Optional[dict[str, int]], post_time: Optional[int | float | str] = None) -> str:
+    """Return a compact single-line stats string, or empty string if no data."""
     parts: list[str] = []
-    if "view" in stats and stats["view"] > 0:
-        parts.append(f"▶ {_fmt_num(stats['view'])}")
-    if "like" in stats and stats["like"] > 0:
-        parts.append(f"♥ {_fmt_num(stats['like'])}")
-    if "coin" in stats and stats["coin"] > 0:
-        parts.append(f"＄ {_fmt_num(stats['coin'])}")
-    if "favorite" in stats and stats["favorite"] > 0:
-        parts.append(f"★ {_fmt_num(stats['favorite'])}")
-    if "online" in stats and stats["online"] > 0:
-        parts.append(f"● {_fmt_num(stats['online'])} 在线")
+
+    post_time_text = _format_post_time(post_time)
+    if post_time_text:
+        parts.append(f"⏱ {post_time_text}")
+
+    if stats:
+        if "view" in stats and stats["view"] > 0:
+            parts.append(f"▶ {_fmt_num(stats['view'])}")
+        if "like" in stats and stats["like"] > 0:
+            parts.append(f"♥ {_fmt_num(stats['like'])}")
+        if "coin" in stats and stats["coin"] > 0:
+            parts.append(f"＄ {_fmt_num(stats['coin'])}")
+        if "favorite" in stats and stats["favorite"] > 0:
+            parts.append(f"★ {_fmt_num(stats['favorite'])}")
+        if "online" in stats and stats["online"] > 0:
+            parts.append(f"● {_fmt_num(stats['online'])} 在线")
+
     return "   ".join(parts)
 
 

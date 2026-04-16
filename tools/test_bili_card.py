@@ -16,6 +16,7 @@ import asyncio
 import importlib.util
 import os
 import sys
+from typing import Optional
 
 # Ensure the repository root is on sys.path so that builtin.* imports resolve.
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -73,7 +74,37 @@ def main() -> None:
         choices=["regular", "medium", "bold"],
         help="Requested font weight for TTC/OTC collections",
     )
+    parser.add_argument("--view", type=int, default=None, help="Video view count")
+    parser.add_argument("--like", type=int, default=None, help="Video like count")
+    parser.add_argument("--coin", type=int, default=None, help="Video coin count")
+    parser.add_argument("--favorite", type=int, default=None, help="Video favorite count")
+    parser.add_argument("--online", type=int, default=None, help="Live online count")
+    parser.add_argument(
+        "--post-time",
+        default="1915459199",
+        help="Post time: unix timestamp (seconds/ms) or datetime string",
+    )
     args = parser.parse_args()
+
+    def _parse_post_time(raw: str) -> Optional[int | str]:
+        value = (raw or "").strip()
+        if not value:
+            return None
+        if value.isdigit():
+            return int(value)
+        return value
+
+    stats = {
+        k: v
+        for k, v in {
+            "view": args.view,
+            "like": args.like,
+            "coin": args.coin,
+            "favorite": args.favorite,
+            "online": args.online,
+        }.items()
+        if v is not None
+    }
 
     async def _run() -> None:
         out = args.output
@@ -87,6 +118,8 @@ def main() -> None:
             tags=[t.strip() for t in args.tags.split(",") if t.strip()],
             description=args.description,
             url=args.url,
+            stats=stats or None,
+            post_time=_parse_post_time(args.post_time),
             font_path=args.font,
             font_weight=args.font_weight,
         )

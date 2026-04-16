@@ -98,6 +98,7 @@ async def build_image_bytes(info: dict[str, Any]) -> bytes:
         description=info["description"],
         url=info["url"],
         stats=info.get("stats"),
+        post_time=info.get("post_time"),
         desc_max_lines=_cfg.bilibili_image_desc_max_lines,
         font_path=_cfg.card_font,
         font_weight=_cfg.card_font_weight,
