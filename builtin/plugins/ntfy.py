@@ -198,7 +198,17 @@ async def _channel_listener(channel: str, targets: list[str]) -> None:
     while True:
         try:
             async with _session.ws_connect(
-                url, headers=headers, timeout=aiohttp.ClientTimeout(total=30)
+                url,
+                headers=headers,
+                # Only time-limit the initial TCP+HTTP handshake, NOT the session.
+                # A `total` timeout would silently close the WS after N seconds.
+                timeout=aiohttp.ClientTimeout(
+                    connect=30,
+                    sock_connect=30,
+                    sock_read=None,  # no per-read deadline; heartbeat handles liveness
+                ),
+                # Send a WS ping every 30 s; close+raise if pong not received in 10 s.
+                heartbeat=30,
             ) as ws:
                 _plugin_logger.info(f"[ntfy] Connected to channel: {channel}")
                 async for msg in ws:
@@ -206,6 +216,17 @@ async def _channel_listener(channel: str, targets: list[str]) -> None:
                         data = json.loads(msg.data)
                         _plugin_logger.debug(f"[ntfy] Received from {channel}: {data}")
                         _inbound_queue.put_nowait((data, targets))
+                    elif msg.type == aiohttp.WSMsgType.ERROR:
+                        # ws.exception() holds the underlying error
+                        _plugin_logger.error(
+                            f"[ntfy] WebSocket error frame on {channel}: {ws.exception()}"
+                        )
+                        break  # fall through to reconnect
+                # Reaching here means the server closed the connection cleanly.
+                _plugin_logger.warning(
+                    f"[ntfy] WebSocket for {channel} closed by server; "
+                    f"reconnecting in {_cfg.ntfy_reconnect_interval}s"
+                )
         except asyncio.CancelledError:
             _plugin_logger.info(f"[ntfy] Listener for {channel} cancelled.")
             return
@@ -214,7 +235,7 @@ async def _channel_listener(channel: str, targets: list[str]) -> None:
                 f"[ntfy] Listener error for {channel}: {exc}; "
                 f"retrying in {_cfg.ntfy_reconnect_interval}s"
             )
-            await asyncio.sleep(_cfg.ntfy_reconnect_interval)
+        await asyncio.sleep(_cfg.ntfy_reconnect_interval)
 
 
 # ---------------------------------------------------------------------------
