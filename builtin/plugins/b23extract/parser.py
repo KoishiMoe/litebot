@@ -386,6 +386,9 @@ async def extract_info(text: str) -> Optional[dict[str, Any]]:
     if short_m:
         text = await _resolve_short_url(short_m.group(0))
 
+    if re.search(r"BV[a-zA-Z0-9]{10}|av\d+|bilibili\.com[/\\]video", text, re.I):
+        return await _parse_video(text, credential)
+
     if re.search(r"live\.bilibili\.com", text, re.I):
         room_m = re.search(
             r"live\.bilibili\.com[/\\]+(?:(?:blanc|h5)[/\\]+)?(\d+)", text, re.I
@@ -407,8 +410,5 @@ async def extract_info(text: str) -> Optional[dict[str, Any]]:
         result = await _parse_opus(text, credential)
         if result:
             return result
-
-    if re.search(r"BV[a-zA-Z0-9]{10}|av\d+|bilibili\.com[/\\]video", text, re.I):
-        return await _parse_video(text, credential)
 
     return None
