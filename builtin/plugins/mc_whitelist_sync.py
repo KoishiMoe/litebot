@@ -188,6 +188,9 @@ _dispatch_queue: asyncio.Queue[tuple[str, list[dict], str]] = asyncio.Queue()
 # the sync — terminating the loop with zero extra network calls.
 _synced: set[tuple[str, str]] = set()
 
+# Track background tasks for clean shutdown (matching ntfy.py pattern).
+_tasks: list[asyncio.Task] = []
+
 driver = get_driver()
 
 # ---------------------------------------------------------------------------
@@ -313,13 +316,6 @@ async def _remove_from_all(name: str) -> dict[str, bool]:
         results[url] = result is not None
     return results
 
-
-def _mark_all_synced(name: str) -> None:
-    """Mark *name* as synced on every server, so the subsequent broadcast
-    notifications from each server don't trigger echo-loop syncs.
-    """
-    for url in _server_urls:
-        _synced.add((name, url))
 
 
 # ---------------------------------------------------------------------------
@@ -551,6 +547,19 @@ async def _full_reconcile() -> None:
     """Fetch every server's whitelist, compute the union, add missing
     players.  Only adds — never removes.
     """
+    try:
+        await _full_reconcile_impl()
+    except Exception as exc:
+        _plugin_logger.error(
+            f"[mc_whitelist_sync] Full reconciliation failed: {exc}"
+        )
+
+
+async def _full_reconcile_impl() -> None:
+    """Inner implementation of full reconciliation.  Separated so the outer
+    wrapper can catch and log any unexpected errors without crashing the
+    background task silently.
+    """
     _plugin_logger.info("[mc_whitelist_sync] Full reconciliation starting ...")
 
     all_lists: dict[str, list[dict]] = {}
@@ -571,15 +580,29 @@ async def _full_reconcile() -> None:
         return
 
     union: set[str] = set()
-    for entries in all_lists.values():
-        union.update(e["name"] for e in entries)
+    for url, entries in all_lists.items():
+        try:
+            union.update(e["name"] for e in entries)
+        except (KeyError, TypeError) as exc:
+            _plugin_logger.error(
+                f"[mc_whitelist_sync] Unexpected allowlist/list response "
+                f"from {_short_label(url)}: {exc}.  Skipping this server."
+            )
+            continue
 
     _plugin_logger.info(
         f"[mc_whitelist_sync] Union: {len(union)} unique player(s)"
     )
 
     for url, entries in all_lists.items():
-        server_names = {e["name"] for e in entries}
+        try:
+            server_names = {e["name"] for e in entries}
+        except (KeyError, TypeError) as exc:
+            _plugin_logger.error(
+                f"[mc_whitelist_sync] Unexpected allowlist/list response "
+                f"from {_short_label(url)}: {exc}.  Skipping this server."
+            )
+            continue
         missing = union - server_names
         if not missing:
             continue
@@ -682,8 +705,13 @@ async def _handle_add(bot: Bot, event: MessageEvent, name: str) -> None:
     if not name:
         return
 
-    _mark_all_synced(name)
     results = await _add_to_all(name)
+
+    # Only mark successful servers — failed ones still need sync on
+    # future manual additions.
+    for url, ok in results.items():
+        if ok:
+            _synced.add((name, url))
 
     failed = [_short_label(u) for u, ok in results.items() if not ok]
     if failed:
@@ -717,8 +745,13 @@ async def _handle_remove(bot: Bot, event: MessageEvent, name: str) -> None:
     if not name:
         return
 
-    _mark_all_synced(name)
     results = await _remove_from_all(name)
+
+    # Only mark successful servers — failed ones still need sync on
+    # future manual removals.
+    for url, ok in results.items():
+        if ok:
+            _synced.add((name, url))
 
     failed = [_short_label(u) for u, ok in results.items() if not ok]
     if failed:
@@ -754,12 +787,14 @@ async def _startup() -> None:
     _session = aiohttp.ClientSession()
 
     for url in _server_urls:
-        asyncio.create_task(
-            _server_listener(url),
-            name=f"mc-wl-listener-{_short_label(url)}",
+        _tasks.append(
+            asyncio.create_task(
+                _server_listener(url),
+                name=f"mc-wl-listener-{_short_label(url)}",
+            )
         )
 
-    asyncio.create_task(_dispatcher(), name="mc-wl-dispatcher")
+    _tasks.append(asyncio.create_task(_dispatcher(), name="mc-wl-dispatcher"))
 
     _plugin_logger.info(
         f"[mc_whitelist_sync] Listening on {len(_server_urls)} "
@@ -773,10 +808,14 @@ async def _startup() -> None:
         )
 
     if _cfg.mc_wl_sync_on_start:
-        asyncio.create_task(_delayed_full_sync(), name="mc-wl-full-sync")
+        _tasks.append(
+            asyncio.create_task(_delayed_full_sync(), name="mc-wl-full-sync")
+        )
 
 
 @driver.on_shutdown
 async def _shutdown() -> None:
+    for task in _tasks:
+        task.cancel()
     if _session:
         await _session.close()
