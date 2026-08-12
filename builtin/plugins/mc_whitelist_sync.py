@@ -385,6 +385,7 @@ async def _server_listener(url: str) -> None:
     """
     label = _short_label(url)
     delay = _cfg.mc_wl_reconnect_interval if _cfg.mc_wl_reconnect_interval > 0 else 10
+    assert _session is not None  # set by _startup before this task runs
 
     while True:
         try:
@@ -622,7 +623,7 @@ async def _full_reconcile_impl() -> None:
                 f"from {_short_label(url)}: {exc}.  Skipping this server."
             )
             continue
-        missing = union - server_names
+        missing: set[str] = union - server_names
         if not missing:
             continue
         _plugin_logger.info(
