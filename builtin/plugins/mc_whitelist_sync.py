@@ -153,6 +153,7 @@ _cfg = get_plugin_config(_Config)
 # Extract URL list and per-server auth info from the config
 _server_urls: list[str] = []
 _server_headers: dict[str, dict[str, str]] = {}   # url → headers dict
+_server_labels: dict[str, str] = {}               # url → display label for QQ
 
 for _entry in _cfg.mc_wl_servers:
     _url = _entry.get("url", "")
@@ -162,6 +163,9 @@ for _entry in _cfg.mc_wl_servers:
     _token = _entry.get("token", "")
     if _token:
         _server_headers[_url] = {"Authorization": f"Bearer {_token}"}
+    _label = _entry.get("label", "")
+    if _label:
+        _server_labels[_url] = _label
 
 # ---------------------------------------------------------------------------
 # Runtime state
@@ -204,6 +208,21 @@ def _short_label(url: str) -> str:
     s = s.split("@", 1)[-1]
     s = s.replace("wss://", "").replace("ws://", "")
     return s.split(":")[0] if ":" in s else s
+
+
+def _display_label(url: str) -> str:
+    """Return a safe label for QQ-facing messages.
+
+    Uses the configured ``label`` field if present, otherwise falls back
+    to a generic ``Server N`` based on the server's index.
+    """
+    if url in _server_labels:
+        return _server_labels[url]
+    try:
+        idx = _server_urls.index(url)
+        return f"Server {idx + 1}"
+    except ValueError:
+        return "Unknown"
 
 
 def _get_bot():
@@ -336,7 +355,7 @@ async def _notify_qq(action: str, name: str, from_url: str) -> None:
         return
 
     key = "wl_added" if action == "added" else "wl_removed"
-    msg = t(_S[key], name=name, server=_short_label(from_url))
+    msg = t(_S[key], name=name, server=_display_label(from_url))
 
     for gid in _cfg.mc_wl_notify_groups:
         try:
@@ -713,7 +732,7 @@ async def _handle_add(bot: Bot, event: MessageEvent, name: str) -> None:
         if ok:
             _synced.add((name, url))
 
-    failed = [_short_label(u) for u, ok in results.items() if not ok]
+    failed = [_display_label(u) for u, ok in results.items() if not ok]
     if failed:
         await _wl_cmd.finish(
             MessageSegment.reply(event.message_id)
@@ -753,7 +772,7 @@ async def _handle_remove(bot: Bot, event: MessageEvent, name: str) -> None:
         if ok:
             _synced.add((name, url))
 
-    failed = [_short_label(u) for u, ok in results.items() if not ok]
+    failed = [_display_label(u) for u, ok in results.items() if not ok]
     if failed:
         await _wl_cmd.finish(
             MessageSegment.reply(event.message_id)
