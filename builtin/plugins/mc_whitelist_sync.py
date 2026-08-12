@@ -3,7 +3,7 @@ mc_whitelist_sync.py – Bidirectional Minecraft whitelist mirroring + QQ notifi
 
 Each MC server gets **one persistent WebSocket** used for both:
   - receiving ``allowlist/added`` / ``allowlist/removed`` notifications
-  - sending ``allowlist/list`` / ``add`` / ``remove`` requests on demand
+  - sending ``allowlist`` / ``add`` / ``remove`` requests on demand
 
 **Echo-loop prevention**
 
@@ -280,7 +280,7 @@ async def _sync_add(name: str, from_url: str) -> None:
         _plugin_logger.info(
             f"[mc_whitelist_sync] → add {name!r} to {_short_label(url)}"
         )
-        await _rpc(url, "allowlist/add", [name])
+        await _rpc(url, "allowlist/add", [[{"name": name}]])
 
 
 async def _sync_remove(name: str, from_url: str) -> None:
@@ -294,7 +294,7 @@ async def _sync_remove(name: str, from_url: str) -> None:
         _plugin_logger.info(
             f"[mc_whitelist_sync] → remove {name!r} from {_short_label(url)}"
         )
-        await _rpc(url, "allowlist/remove", [name])
+        await _rpc(url, "allowlist/remove", [[{"name": name}]])
 
 
 async def _add_to_all(name: str) -> dict[str, bool]:
@@ -303,7 +303,7 @@ async def _add_to_all(name: str) -> dict[str, bool]:
     """
     results: dict[str, bool] = {}
     for url in _server_urls:
-        result = await _rpc(url, "allowlist/add", [name])
+        result = await _rpc(url, "allowlist/add", [[{"name": name}]])
         results[url] = result is not None
     return results
 
@@ -312,7 +312,7 @@ async def _remove_from_all(name: str) -> dict[str, bool]:
     """Remove *name* from every connected server."""
     results: dict[str, bool] = {}
     for url in _server_urls:
-        result = await _rpc(url, "allowlist/remove", [name])
+        result = await _rpc(url, "allowlist/remove", [[{"name": name}]])
         results[url] = result is not None
     return results
 
@@ -564,7 +564,7 @@ async def _full_reconcile_impl() -> None:
 
     all_lists: dict[str, list[dict]] = {}
     for url in _server_urls:
-        result = await _rpc(url, "allowlist/list", [])
+        result = await _rpc(url, "allowlist", [])
         if result is not None:
             all_lists[url] = result
             _plugin_logger.info(
@@ -585,7 +585,7 @@ async def _full_reconcile_impl() -> None:
             union.update(e["name"] for e in entries)
         except (KeyError, TypeError) as exc:
             _plugin_logger.error(
-                f"[mc_whitelist_sync] Unexpected allowlist/list response "
+                f"[mc_whitelist_sync] Unexpected allowlist response "
                 f"from {_short_label(url)}: {exc}.  Skipping this server."
             )
             continue
@@ -599,7 +599,7 @@ async def _full_reconcile_impl() -> None:
             server_names = {e["name"] for e in entries}
         except (KeyError, TypeError) as exc:
             _plugin_logger.error(
-                f"[mc_whitelist_sync] Unexpected allowlist/list response "
+                f"[mc_whitelist_sync] Unexpected allowlist response "
                 f"from {_short_label(url)}: {exc}.  Skipping this server."
             )
             continue
@@ -611,7 +611,7 @@ async def _full_reconcile_impl() -> None:
             f"{len(missing)}: {sorted(missing)}"
         )
         for name in sorted(missing):
-            await _rpc(url, "allowlist/add", [name])
+            await _rpc(url, "allowlist/add", [[{"name": name}]])
             # Suppress the echo from the server we just added to
             _synced.add((name, url))
 
