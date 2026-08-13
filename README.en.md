@@ -28,6 +28,7 @@ A lightweight QQ bot built on [NoneBot2](https://nonebot.dev/) and the OneBot v1
 | **drasl** | `/invite` | Generate [Drasl](https://github.com/unmojang/drasl) Minecraft auth-server invite links |
 | **b23extract** | — | Parse Bilibili links and reply with rich info cards |
 | **mcping** | `/mcping` | Ping a Minecraft server and show player/version info |
+| **mc_whitelist_sync** | `/whitelist` | Bidirectional Minecraft whitelist mirroring + QQ notifications |
 
 ---
 
@@ -77,6 +78,7 @@ All settings live in `.env` (copy from `.env.example`).  Key options:
 | `BILIBILI_SESSDATA` / `BILIBILI_BILI_JCT` / `BILIBILI_BUVID3` | *(empty)* | Optional Bilibili credentials |
 | `DRASL_SERVER` / `DRASL_TOKEN` | *(empty)* | Drasl server URL and API token |
 | `NTFY_SERVER` / `NTFY_TOKEN` | `https://ntfy.sh` / *(empty)* | ntfy server and auth token |
+| `MC_WL_SERVERS` | `[]` | MC server list |
 
 See `.env.example` for the full list with inline documentation.
 
@@ -106,6 +108,17 @@ The `service` plugin provides per-group and per-user feature gating for all othe
 /svc on|off <name> -g <group_id>     For a specific group
 /svc on|off <name> -u <user_id>      For a user (all groups)
 /svc on|off * [-g …] [-u …]          Wildcard: all features at once
+```
+
+---
+
+## Whitelist Sync
+
+`mc_whitelist_sync` connects to multiple Minecraft servers via WebSocket for bidirectional whitelist mirroring with QQ group notifications. See `.env.example` for configuration.
+
+```
+/whitelist add <player>      Add a player to all servers
+/whitelist remove <player>   Remove a player from all servers (superuser PM only)
 ```
 
 ---

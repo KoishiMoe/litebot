@@ -28,6 +28,7 @@
 | **drasl** | `/invite` | 生成 [Drasl](https://github.com/unmojang/drasl) Minecraft 验证服务器邀请链接 |
 | **b23extract** | — | 解析哔哩哔哩链接并回复富信息卡片 |
 | **mcping** | `/mcping` | Ping Minecraft 服务器并显示玩家 / 版本信息 |
+| **mc_whitelist_sync** | `/whitelist` | Minecraft 服务器白名单双向同步 + QQ 群通知 |
 
 ---
 
@@ -77,6 +78,8 @@ uv run python bot.py
 | `BILIBILI_SESSDATA` / `BILIBILI_BILI_JCT` / `BILIBILI_BUVID3` | *(留空)* | 可选的 Bilibili 登录凭据 |
 | `DRASL_SERVER` / `DRASL_TOKEN` | *(留空)* | Drasl 服务器地址和 API 令牌 |
 | `NTFY_SERVER` / `NTFY_TOKEN` | `https://ntfy.sh` / *(留空)* | ntfy 服务器及认证令牌 |
+| `MC_WL_SERVERS` | `[]` | MC 服务器列表 |
+| `MC_WL_INSECURE_SSL` | `false` | 对自签名证书的 `wss://` 服务器跳过 TLS 校验（也可在 `MC_WL_SERVERS` 单条中设 `"insecure": true`） |
 
 完整配置项及说明请参阅 `.env.example`。
 
@@ -106,6 +109,17 @@ uv run python bot.py
 /svc on|off <名称> -g <群号>         针对指定群
 /svc on|off <名称> -u <QQ号>         针对指定用户（所有群）
 /svc on|off * [-g …] [-u …]          通配符：同时操作所有功能
+```
+
+---
+
+## 白名单同步
+
+`mc_whitelist_sync` 通过 WebSocket 连接多台 Minecraft 服务器，实现白名单双向同步与 QQ 群通知。配置详见 `.env.example`。
+
+```
+/whitelist add <玩家名>      添加玩家到所有服务器
+/whitelist remove <玩家名>   从所有服务器移除（仅超级用户私聊）
 ```
 
 ---
