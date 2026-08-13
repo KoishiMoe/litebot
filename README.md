@@ -79,6 +79,7 @@ uv run python bot.py
 | `DRASL_SERVER` / `DRASL_TOKEN` | *(留空)* | Drasl 服务器地址和 API 令牌 |
 | `NTFY_SERVER` / `NTFY_TOKEN` | `https://ntfy.sh` / *(留空)* | ntfy 服务器及认证令牌 |
 | `MC_WL_SERVERS` | `[]` | MC 服务器列表 |
+| `MC_WL_INSECURE_SSL` | `false` | 对自签名证书的 `wss://` 服务器跳过 TLS 校验（也可在 `MC_WL_SERVERS` 单条中设 `"insecure": true`） |
 
 完整配置项及说明请参阅 `.env.example`。
 

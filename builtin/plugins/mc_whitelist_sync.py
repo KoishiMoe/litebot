@@ -2,8 +2,9 @@
 mc_whitelist_sync.py – Bidirectional Minecraft whitelist mirroring + QQ notifications.
 
 Each MC server gets **one persistent WebSocket** used for both:
-  - receiving ``allowlist/added`` / ``allowlist/removed`` notifications
-  - sending ``allowlist`` / ``add`` / ``remove`` requests on demand
+  - receiving ``minecraft:notification/allowlist/added`` /
+    ``minecraft:notification/allowlist/removed`` notifications
+  - sending ``allowlist`` / ``allowlist/add`` / ``allowlist/remove`` requests
 
 **Echo-loop prevention**
 
@@ -15,10 +16,12 @@ whitelist change, regardless of origin).
 Without intervention, this notification from B would trigger another round
 of sync — back to A, and so on.
 
-The fix is a ``_synced`` set that records ``(name, target_url)`` for every
-add/remove the bot itself performed.  The dispatcher checks this set BEFORE
+The fix is a ``_synced`` map of ``(name, target_url) → expiry`` for every
+add/remove the bot itself performed.  The dispatcher checks this map BEFORE
 calling ``_sync_add`` / ``_sync_remove`` — when the echo comes back, the
-entry is found, discarded, and the loop terminates with **zero extra RPCs**.
+entry is found, consumed, and the loop terminates with **zero extra RPCs**.
+Each entry expires after a TTL so a lost echo cannot suppress a later
+legitimate change forever.
 
 **Startup reconciliation**
 
@@ -38,15 +41,21 @@ Each server receives only the players it is missing.  Players are never removed.
 
 Config keys (set in .env)::
 
-    MC_WL_SERVERS=[{"url":"wss://host:port","token":"..."}, ...]
+    MC_WL_SERVERS=[{"url":"wss://host:port","token":"...","label":"...","insecure":false}, ...]
+                    # per server: token (Bearer auth), label (QQ display name,
+                    # defaults to "Server N"), insecure (skip TLS verification
+                    # for a self-signed cert; overrides MC_WL_INSECURE_SSL)
     MC_WL_ADD_PERMISSION=all          # all | group_admin | superuser
     MC_WL_SYNC_ON_START=true         # full reconcile on boot  (default: true)
     MC_WL_RECONNECT_INTERVAL=10      # seconds between reconnect attempts
     MC_WL_NOTIFY_GROUPS=[]           # QQ group IDs to notify on whitelist changes
+    MC_WL_INSECURE_SSL=false         # global default: skip TLS cert verification
 """
 
 import asyncio
 import json
+import re
+import time
 from typing import Any, Literal, Optional
 
 import aiohttp
@@ -125,6 +134,10 @@ _S = {
         "en": "❌ Failed to remove {name} from some servers: {failed}",
         "zh": "❌ 未能将 {name} 从以下服务器移除：{failed}",
     },
+    "cmd_invalid_name": {
+        "en": "❌ Invalid player name {name!r}. Names must be 1-16 characters of letters, digits, or underscores.",
+        "zh": "❌ 玩家名 {name!r} 无效。名称须为 1-16 位的字母、数字或下划线。",
+    },
 }
 
 __plugin_meta__ = PluginMetadata(
@@ -146,6 +159,7 @@ class _Config(BaseModel):
     mc_wl_sync_on_start: bool = True
     mc_wl_reconnect_interval: int = 10
     mc_wl_notify_groups: list[int] = []
+    mc_wl_insecure_ssl: bool = False
 
 
 _cfg = get_plugin_config(_Config)
@@ -154,6 +168,7 @@ _cfg = get_plugin_config(_Config)
 _server_urls: list[str] = []
 _server_headers: dict[str, dict[str, str]] = {}   # url → headers dict
 _server_labels: dict[str, str] = {}               # url → display label for QQ
+_server_insecure: set[str] = set()                # urls using self-signed TLS
 
 for _entry in _cfg.mc_wl_servers:
     _url = _entry.get("url", "")
@@ -166,6 +181,10 @@ for _entry in _cfg.mc_wl_servers:
     _label = _entry.get("label", "")
     if _label:
         _server_labels[_url] = _label
+    # Skip TLS certificate verification per server (or globally) for
+    # self-signed ``wss://`` endpoints.
+    if _entry.get("insecure", _cfg.mc_wl_insecure_ssl):
+        _server_insecure.add(_url)
 
 # ---------------------------------------------------------------------------
 # Runtime state
@@ -186,11 +205,17 @@ _conns_lock = asyncio.Lock()
 # Items: (method: str, params: list[dict], from_url: str)
 _dispatch_queue: asyncio.Queue[tuple[str, list[dict], str]] = asyncio.Queue()
 
-# Echo-loop prevention: (name, target_url) for every add/remove the bot
-# itself performed.  When the target MC server echoes the change back as a
-# notification, the dispatcher finds the entry here, discards it, and skips
+# Echo-loop prevention: (name, target_url) → expiry timestamp for every
+# add/remove the bot itself performed.  When the target MC server echoes the
+# change back as a notification, the dispatcher finds the entry here and skips
 # the sync — terminating the loop with zero extra network calls.
-_synced: set[tuple[str, str]] = set()
+#
+# Entries carry a TTL: if the echo is lost (e.g. the connection dropped right
+# after a successful write, or the server is idempotent and does not broadcast
+# for an already-present player), the entry expires and a later *legitimate*
+# change on that server is no longer misidentified as an echo.
+_synced: dict[tuple[str, str], float] = {}
+_SYNCED_TTL = 60.0  # seconds before a stale echo-suppression entry is ignored
 
 # Track background tasks for clean shutdown (matching ntfy.py pattern).
 _tasks: list[asyncio.Task] = []
@@ -230,6 +255,18 @@ def _get_bot():
     return next(iter(bots.values()), None) if bots else None
 
 
+# Minecraft usernames are at most 16 characters of letters, digits and
+# underscores.  The minimum length is kept at 1 (rather than 3) so short
+# offline-mode names still work, while control characters, whitespace and
+# other unusable input are rejected.
+_NAME_RE = re.compile(r"^[A-Za-z0-9_]{1,16}$")
+
+
+def _is_valid_name(name: str) -> bool:
+    """Return True when *name* looks like a valid Minecraft player name."""
+    return bool(_NAME_RE.match(name))
+
+
 # ---------------------------------------------------------------------------
 # JSON-RPC call — reuses the persistent WS connection
 # ---------------------------------------------------------------------------
@@ -241,7 +278,7 @@ async def _rpc(url: str, method: str, params: list) -> Optional[list[dict]]:
     """
     global _rid
 
-    future: asyncio.Future = asyncio.get_event_loop().create_future()
+    future: asyncio.Future = asyncio.get_running_loop().create_future()
 
     async with _rid_lock:
         _rid += 1
@@ -259,11 +296,19 @@ async def _rpc(url: str, method: str, params: list) -> Optional[list[dict]]:
             )
             return None
         conn["pending"][rid] = future
+        write_lock = conn["wlock"]
 
     payload = {"jsonrpc": "2.0", "id": rid, "method": method, "params": params}
 
     try:
-        await conn["ws"].send_json(payload)
+        # Serialize writes per connection.  Several tasks may call _rpc on the
+        # same URL concurrently (dispatcher, reconciliation, QQ command
+        # handlers) and aiohttp does not guarantee safe concurrent send_* on a
+        # single WebSocket, so each connection gets its own asyncio.Lock.
+        # Only the send is serialized — responses still match by request id,
+        # so a slow RPC cannot head-of-line block other requests.
+        async with write_lock:
+            await conn["ws"].send_json(payload)
         return await asyncio.wait_for(future, timeout=15)
     except asyncio.TimeoutError:
         _plugin_logger.error(
@@ -286,34 +331,41 @@ async def _rpc(url: str, method: str, params: list) -> Optional[list[dict]]:
 # ---------------------------------------------------------------------------
 
 
-async def _sync_add(name: str, from_url: str) -> None:
+async def _sync_add(name: str, from_url: str) -> set[str]:
     """Add *name* to every server except ``from_url``.
 
-    The caller (**must** be ``_dispatcher`` or ``_full_reconcile``) is
-    responsible for marking ``_synced`` so the subsequent echo notification
-    does not trigger another round of sync.
+    Returns the set of server URLs the add actually succeeded on, so the
+    caller can mark exactly those (and only those) as ``_synced`` to suppress
+    their echo notifications.  Failed servers stay unmarked so a future
+    legitimate change on them is not incorrectly discarded.
     """
+    succeeded: set[str] = set()
     for url in _server_urls:
         if url == from_url:
             continue
         _plugin_logger.info(
             f"[mc_whitelist_sync] → add {name!r} to {_short_label(url)}"
         )
-        await _rpc(url, "allowlist/add", [[{"name": name}]])
+        if await _rpc(url, "allowlist/add", [[{"name": name}]]) is not None:
+            succeeded.add(url)
+    return succeeded
 
 
-async def _sync_remove(name: str, from_url: str) -> None:
+async def _sync_remove(name: str, from_url: str) -> set[str]:
     """Remove *name* from every server except ``from_url``.
 
-    Same contract as ``_sync_add`` regarding ``_synced``.
+    Same contract as ``_sync_add`` regarding the returned success set.
     """
+    succeeded: set[str] = set()
     for url in _server_urls:
         if url == from_url:
             continue
         _plugin_logger.info(
             f"[mc_whitelist_sync] → remove {name!r} from {_short_label(url)}"
         )
-        await _rpc(url, "allowlist/remove", [[{"name": name}]])
+        if await _rpc(url, "allowlist/remove", [[{"name": name}]]) is not None:
+            succeeded.add(url)
+    return succeeded
 
 
 async def _add_to_all(name: str) -> dict[str, bool]:
@@ -392,6 +444,7 @@ async def _server_listener(url: str) -> None:
             async with _session.ws_connect(
                 url,
                 headers=_server_headers.get(url, {}),
+                ssl=(False if url in _server_insecure else True),
                 timeout=aiohttp.ClientTimeout(
                     connect=30,
                     sock_connect=30,
@@ -401,7 +454,11 @@ async def _server_listener(url: str) -> None:
             ) as ws:
                 pending: dict[int, asyncio.Future] = {}
                 async with _conns_lock:
-                    _conns[url] = {"ws": ws, "pending": pending}
+                    _conns[url] = {
+                        "ws": ws,
+                        "pending": pending,
+                        "wlock": asyncio.Lock(),
+                    }
 
                 _plugin_logger.info(
                     f"[mc_whitelist_sync] Connected to {label}"
@@ -412,45 +469,57 @@ async def _server_listener(url: str) -> None:
                     else 10
                 )
 
-                async for msg in ws:
-                    if msg.type == aiohttp.WSMsgType.TEXT:
-                        data = json.loads(msg.data)
+                try:
+                    async for msg in ws:
+                        if msg.type == aiohttp.WSMsgType.TEXT:
+                            try:
+                                data = json.loads(msg.data)
+                            except (json.JSONDecodeError, ValueError) as exc:
+                                _plugin_logger.warning(
+                                    f"[mc_whitelist_sync] Non-JSON message from "
+                                    f"{label} ignored: {exc}"
+                                )
+                                continue
 
-                        if "id" in data:
-                            # ── RPC response ──────────────────────────────
-                            rid = data["id"]
-                            fut = pending.pop(rid, None)
-                            if fut and not fut.done():
-                                if "result" in data:
-                                    fut.set_result(data["result"])
-                                elif "error" in data:
-                                    _plugin_logger.error(
-                                        f"[mc_whitelist_sync] RPC error from "
-                                        f"{label}: {data['error']}"
-                                    )
-                                    fut.set_result(None)
+                            if "id" in data:
+                                # ── RPC response ──────────────────────────
+                                rid = data["id"]
+                                fut = pending.pop(rid, None)
+                                if fut and not fut.done():
+                                    if "result" in data:
+                                        fut.set_result(data["result"])
+                                    elif "error" in data:
+                                        _plugin_logger.error(
+                                            f"[mc_whitelist_sync] RPC error from "
+                                            f"{label}: {data['error']}"
+                                        )
+                                        fut.set_result(None)
 
-                        elif "method" in data:
-                            # ── Notification ──────────────────────────────
-                            _dispatch_queue.put_nowait((
-                                data["method"],
-                                data.get("params", []),
-                                url,
-                            ))
+                            elif "method" in data:
+                                # ── Notification ──────────────────────────
+                                _dispatch_queue.put_nowait((
+                                    data["method"],
+                                    data.get("params", []),
+                                    url,
+                                ))
 
-                    elif msg.type == aiohttp.WSMsgType.ERROR:
-                        _plugin_logger.error(
-                            f"[mc_whitelist_sync] WS error from {label}: "
-                            f"{ws.exception()}"
-                        )
-                        break
+                        elif msg.type == aiohttp.WSMsgType.ERROR:
+                            _plugin_logger.error(
+                                f"[mc_whitelist_sync] WS error from {label}: "
+                                f"{ws.exception()}"
+                            )
+                            break
 
-                # ── connection lost — clean up ───────────────────────────
-                for fut in pending.values():
-                    if not fut.done():
-                        fut.set_result(None)
-                async with _conns_lock:
-                    _conns.pop(url, None)
+                finally:
+                    # ── connection lost — clean up ───────────────────────
+                    # Resolve any in-flight RPC futures fast (so _rpc callers
+                    # don't stall for the full timeout) and deregister, on
+                    # every exit path (clean close, error, or cancellation).
+                    for fut in pending.values():
+                        if not fut.done():
+                            fut.set_result(None)
+                    async with _conns_lock:
+                        _conns.pop(url, None)
 
                 _plugin_logger.warning(
                     f"[mc_whitelist_sync] {label} closed; "
@@ -493,8 +562,21 @@ async def _dispatcher() -> None:
     ``allowlist/added`` → ``_sync_add`` + ``_notify_qq``
     ``allowlist/removed`` → ``_sync_remove`` + ``_notify_qq``
     """
+    _last_purge = 0.0
     while True:
         try:
+            # Opportunistically drop expired echo-suppression entries so they
+            # don't accumulate when echoes are never received.
+            now = time.monotonic()
+            if now - _last_purge >= 30.0:
+                _last_purge = now
+                stale = _purge_synced()
+                if stale:
+                    _plugin_logger.debug(
+                        f"[mc_whitelist_sync] purged {stale} stale echo "
+                        "suppression entry/ies"
+                    )
+
             method, params, from_url = await _dispatch_queue.get()
             try:
                 for entry in params:
@@ -503,10 +585,10 @@ async def _dispatcher() -> None:
                         continue
 
                     # ── echo-loop guard ───────────────────────────────────
-                    # If the bot itself wrote this name to this server, the
-                    # resulting broadcast is an echo — skip it.
-                    if (name, from_url) in _synced:
-                        _synced.discard((name, from_url))
+                    # If the bot itself wrote this name to this server within
+                    # the TTL window, the resulting broadcast is an echo — skip
+                    # it.  Expired/missing entries are treated as real changes.
+                    if _consume_synced(name, from_url):
                         _plugin_logger.debug(
                             f"[mc_whitelist_sync] echo skipped: "
                             f"{name!r} on {_short_label(from_url)}"
@@ -518,9 +600,10 @@ async def _dispatcher() -> None:
                             f"[mc_whitelist_sync] ← added {name!r} "
                             f"on {_short_label(from_url)}"
                         )
-                        # Perform sync, then mark so echoes are ignored
-                        await _sync_add(name, from_url)
-                        _mark_synced(name, from_url)
+                        # Perform sync, then mark only the servers that
+                        # actually received the add so their echoes are
+                        # ignored; failed servers stay unmarked.
+                        _mark_synced(name, await _sync_add(name, from_url))
                         await _notify_qq("added", name, from_url)
 
                     elif method == "minecraft:notification/allowlist/removed":
@@ -528,8 +611,7 @@ async def _dispatcher() -> None:
                             f"[mc_whitelist_sync] ← removed {name!r} "
                             f"on {_short_label(from_url)}"
                         )
-                        await _sync_remove(name, from_url)
-                        _mark_synced(name, from_url)
+                        _mark_synced(name, await _sync_remove(name, from_url))
                         await _notify_qq("removed", name, from_url)
 
             finally:
@@ -544,13 +626,36 @@ async def _dispatcher() -> None:
             )
 
 
-def _mark_synced(name: str, from_url: str) -> None:
-    """Record that *name* was synced from *from_url*, so the echo
-    notification from every target server will be ignored.
+def _mark_synced_entry(name: str, url: str) -> None:
+    """Mark a single (name, url) pair as bot-initiated, with a TTL."""
+    _synced[(name, url)] = time.monotonic() + _SYNCED_TTL
+
+
+def _mark_synced(name: str, urls: set[str]) -> None:
+    """Record that *name* was written to each of *urls* by the bot itself.
+
+    The echo notification from each of these target servers will then be
+    ignored, terminating the sync loop.  Only actually-updated servers are
+    marked, so a later legitimate change on an untouched server is preserved.
     """
-    for url in _server_urls:
-        if url != from_url:
-            _synced.add((name, url))
+    for url in urls:
+        _mark_synced_entry(name, url)
+
+
+def _consume_synced(name: str, url: str) -> bool:
+    """Pop the echo-suppression entry for (name, url); return True if it is
+    still within its TTL (i.e. this notification is a live echo)."""
+    expiry = _synced.pop((name, url), None)
+    return expiry is not None and expiry >= time.monotonic()
+
+
+def _purge_synced() -> int:
+    """Drop expired echo-suppression entries; return how many were removed."""
+    now = time.monotonic()
+    stale = [key for key, expiry in _synced.items() if expiry < now]
+    for key in stale:
+        _synced.pop(key, None)
+    return len(stale)
 
 
 # ---------------------------------------------------------------------------
@@ -558,8 +663,30 @@ def _mark_synced(name: str, from_url: str) -> None:
 # ---------------------------------------------------------------------------
 
 
-async def _delayed_full_sync(delay: float = 5.0) -> None:
-    await asyncio.sleep(delay)
+async def _reconcile_when_ready(
+    min_conns: int = 2,
+    max_wait: float = 30.0,
+    poll_interval: float = 1.0,
+) -> None:
+    """Wait until at least *min_conns* servers are connected, then reconcile.
+
+    A fixed startup delay risks running before slow servers connect (skipping
+    them).  Instead, poll the live connection table until enough servers are
+    up, bounded by *max_wait* seconds so a permanently-down server cannot
+    stall startup indefinitely.  ``_full_reconcile`` itself aborts gracefully
+    if fewer than two servers are ultimately reachable.
+    """
+    elapsed = 0.0
+    while elapsed < max_wait:
+        async with _conns_lock:
+            connected = [
+                u for u in _server_urls
+                if u in _conns and not _conns[u]["ws"].closed
+            ]
+        if len(connected) >= min_conns or len(connected) >= len(_server_urls):
+            break
+        await asyncio.sleep(poll_interval)
+        elapsed += poll_interval
     await _full_reconcile()
 
 
@@ -631,9 +758,9 @@ async def _full_reconcile_impl() -> None:
             f"{len(missing)}: {sorted(missing)}"
         )
         for name in sorted(missing):
-            await _rpc(url, "allowlist/add", [[{"name": name}]])
-            # Suppress the echo from the server we just added to
-            _synced.add((name, url))
+            if await _rpc(url, "allowlist/add", [[{"name": name}]]) is not None:
+                # Suppress the echo only when the add actually succeeded.
+                _mark_synced_entry(name, url)
 
     _plugin_logger.info("[mc_whitelist_sync] Full reconciliation complete.")
 
@@ -724,6 +851,11 @@ async def _handle_add(bot: Bot, event: MessageEvent, name: str) -> None:
 
     if not name:
         return
+    if not _is_valid_name(name):
+        await _wl_cmd.finish(
+            MessageSegment.reply(event.message_id)
+            + t(_S["cmd_invalid_name"], name=name)
+        )
 
     results = await _add_to_all(name)
 
@@ -731,7 +863,7 @@ async def _handle_add(bot: Bot, event: MessageEvent, name: str) -> None:
     # future manual additions.
     for url, ok in results.items():
         if ok:
-            _synced.add((name, url))
+            _mark_synced_entry(name, url)
 
     failed = [_display_label(u) for u, ok in results.items() if not ok]
     if failed:
@@ -764,6 +896,11 @@ async def _handle_remove(bot: Bot, event: MessageEvent, name: str) -> None:
 
     if not name:
         return
+    if not _is_valid_name(name):
+        await _wl_cmd.finish(
+            MessageSegment.reply(event.message_id)
+            + t(_S["cmd_invalid_name"], name=name)
+        )
 
     results = await _remove_from_all(name)
 
@@ -771,7 +908,7 @@ async def _handle_remove(bot: Bot, event: MessageEvent, name: str) -> None:
     # future manual removals.
     for url, ok in results.items():
         if ok:
-            _synced.add((name, url))
+            _mark_synced_entry(name, url)
 
     failed = [_display_label(u) for u, ok in results.items() if not ok]
     if failed:
@@ -829,7 +966,7 @@ async def _startup() -> None:
 
     if _cfg.mc_wl_sync_on_start:
         _tasks.append(
-            asyncio.create_task(_delayed_full_sync(), name="mc-wl-full-sync")
+            asyncio.create_task(_reconcile_when_ready(), name="mc-wl-full-sync")
         )
 
 
