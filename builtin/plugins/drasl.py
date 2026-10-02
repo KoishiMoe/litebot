@@ -197,7 +197,7 @@ async def _handle_invite(bot: Bot, event: PrivateMessageEvent | GroupMessageEven
 
     try:
         async with _session.post(
-            f"{base}/drasl/api/v2/invites",
+            f"{base}/drasl/api/v3/invites",
             headers=headers,
             timeout=aiohttp.ClientTimeout(total=15),
         ) as resp:
@@ -228,7 +228,7 @@ async def _handle_invite(bot: Bot, event: PrivateMessageEvent | GroupMessageEven
         if code:
             try:
                 async with _session.delete(
-                    f"{base}/drasl/api/v2/invites/{code}",
+                    f"{base}/drasl/api/v3/invites/{code}",
                     headers=headers,
                     timeout=aiohttp.ClientTimeout(total=15),
                 ) as del_resp:
