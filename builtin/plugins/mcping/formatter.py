@@ -115,9 +115,5 @@ def want_image(status, is_be: bool) -> bool:
     mode = _cfg.mcping_image_mode
     if mode == "off":
         return False
-    if mode == "on":
-        return True
-    # "auto": generate image when the server provides a favicon (JE) or always for BE
-    if is_be:
-        return True
-    return bool(getattr(status, "icon", None))
+    # "on" or "auto": always generate the card for online servers
+    return True

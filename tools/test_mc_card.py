@@ -54,6 +54,7 @@ def main() -> None:
     parser.add_argument("--latency", type=float, default=42.0)
     parser.add_argument("--favicon", default="")
     parser.add_argument("--bedrock", action="store_true")
+    parser.add_argument("--extra",   default="", help="Extra info (e.g. Bedrock map or gamemode)")
     parser.add_argument("--sample",  default="Steve,Alex,Notch,Herobrine,Dinnerbone",
                         help="Comma-separated player sample names")
     parser.add_argument("--font",        default="")
@@ -83,6 +84,7 @@ def main() -> None:
         latency=args.latency,
         favicon=args.favicon,
         is_bedrock=args.bedrock,
+        extra_info=args.extra,
         player_sample=sample,
         font_path=args.font,
         font_weight=args.font_weight,
