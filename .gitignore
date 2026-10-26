@@ -165,6 +165,7 @@ cython_debug/
 # CLI test output
 tmp/
 
+.devcontainer/
 custom/
 logs/
 data/
