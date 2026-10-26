@@ -154,6 +154,17 @@ MC_COLOR_RGB: dict[str, tuple[int, int, int]] = {
     "e": (255, 255, 85 ),   # yellow
     "f": (255, 255, 255),   # white
     "g": (221, 214, 5  ),   # minecoin_gold (Bedrock)
+    "h": (227, 212, 209),   # material_quartz (Bedrock)
+    "i": (206, 202, 202),   # material_iron (Bedrock)
+    "j": (68,  58,  59 ),   # material_netherite (Bedrock)
+    "m": (151, 22,  7  ),   # material_redstone (Bedrock)
+    "n": (180, 104, 77 ),   # material_copper (Bedrock)
+    "p": (222, 177, 45 ),   # material_gold (Bedrock)
+    "q": (17,  159, 54 ),   # material_emerald (Bedrock)
+    "s": (44,  186, 168),   # material_diamond (Bedrock)
+    "t": (33,  73,  123),   # material_lapis (Bedrock)
+    "u": (154, 92,  198),   # material_amethyst (Bedrock)
+    "v": (235, 114, 20 ),   # material_resin (Bedrock)
 }
 
 # ---------------------------------------------------------------------------
@@ -255,9 +266,20 @@ def _motd_to_spans(
     text is intentionally unreadable, matching the in-game visual intent.
     """
     try:
-        from mcstatus.motd.components import Formatting, MinecraftColor, WebColor
+        from mcstatus.motd.components import (  # type: ignore[attr-defined]
+            BedrockFormatting,
+            BedrockMinecraftColor,
+            JavaFormatting,
+            JavaMinecraftColor,
+            WebColor,
+        )
+        Formatting = (JavaFormatting, BedrockFormatting)
+        MinecraftColor = (JavaMinecraftColor, BedrockMinecraftColor)
     except ImportError:
-        return [_Span(str(p), default_color) for p in parsed if str(p)]
+        try:
+            from mcstatus.motd.components import Formatting, MinecraftColor, WebColor  # type: ignore[no-redef]
+        except ImportError:
+            return [_Span(str(p), default_color) for p in parsed if str(p)]
 
     color = default_color
     bold = italic = underline = strikethrough = obfuscated = False
