@@ -347,6 +347,9 @@ def _draw_italic_chunk(
 ) -> None:
     """Render *text* with an italic shear transform."""
     tw = text_width(text, font)
+    if not tw:
+        return
+
     pad = int(math.ceil(size * _ITALIC_SHEAR)) + 6
     patch_w = tw + pad * 2
     patch_h = size + 10
@@ -355,10 +358,15 @@ def _draw_italic_chunk(
     pdraw = ImageDraw.Draw(patch)
     pdraw.text((pad, 0), text, font=font, fill=(*color, 255))
 
+    try:
+        ascent, _ = font.getmetrics()
+    except Exception:
+        ascent = size
+
     sheared = patch.transform(
         (patch_w, patch_h),
         _AFFINE,
-        (1, -_ITALIC_SHEAR, 0, 0, 1, 0),
+        (1, _ITALIC_SHEAR, -_ITALIC_SHEAR * ascent, 0, 1, 0),
         _RESAMPLE_BILINEAR,
     )
     canvas.paste(sheared, (x - pad, y), sheared)
