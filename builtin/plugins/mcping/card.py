@@ -1,22 +1,20 @@
 """
 card.py – Minecraft server status card builder.
 
-Generates an authentic Minecraft-themed PNG image (800 px wide, ~16:9 ratio)
-optimized for mobile chat previews (no cropping or squishing in QQ):
+Generates an authentic Minecraft-themed PNG image (800 px wide, ~2.35:1 aspect ratio)
+optimized for mobile chat previews (compact height, safe from horizontal cropping in QQ):
 
     ┌────────────────────────────────────────────────────────────────────────┐  ← dirt bg
     │ ┌───────┐  Server Name [Java版]                     ┌────────────────┐ │
     │ │ Fav   │  版本: Paper 1.20.4                       │    在线玩家    │ │
     │ │ icon  │  ▌▌▌▌▌ 42 ms                              │   12 / 100     │ │
     │ └───────┘                                           └────────────────┘ │
-    │ ┌────────────────────────────────────────────────────────────────────┐ │
-    │ │ §aHypixel Network §7[1.8-1.20]                                     │ │  ← MOTD Slot
-    │ │ §b§nNEW§r §eSkyBlock Update §6§lOut Now! §c§oJoin Today            │ │
-    │ └────────────────────────────────────────────────────────────────────┘ │
-    │ ┌────────────────────────────────────────────────────────────────────┐ │
-    │ │ 👥 玩家列表                                                         │ │  ← Player Chips
-    │ │ [☺ Steve]  [☺ Alex]  [☺ Notch]  [☺ Dinnerbone]                     │ │
-    │ └────────────────────────────────────────────────────────────────────┘ │
+    │                                                                        │
+    │ §aHypixel Network §7[1.8-1.20]                                         │  ← MOTD text + shadow
+    │ §b§nNEW§r §eSkyBlock Update §6§lOut Now! §c§oJoin Today                │
+    │ ────────────────────────────────────────────────────────────────────── │  ← 2px groove line
+    │ 在线玩家列表:                                                          │
+    │ [☺ Steve]  [☺ Alex]  [☺ Notch]  [☺ Dinnerbone]                         │  ← Player Chips
     └────────────────────────────────────────────────────────────────────────┘
 
 CLI test (from repository root)::
@@ -53,7 +51,7 @@ from builtin.utils.image_common import (
 # ---------------------------------------------------------------------------
 
 CARD_W = 800
-MIN_CARD_H = 460   # ~16:9 ratio guarantee (800 x 460 ≈ 1.74:1)
+MIN_CARD_H = 340   # Compact mobile height (~2.35:1 ratio, safely under QQ's 3:1 limit)
 SIDE_PAD = 24
 ICON_SIZE = 88
 
@@ -227,6 +225,17 @@ def _draw_outer_frame(
         draw.line([(x1 - b, y0 + b), (x1 - b, y1 - b)], fill=C_FRAME_SH)
 
 
+def _draw_groove_line(
+    draw: ImageDraw.ImageDraw,
+    x0: int,
+    y: int,
+    x1: int,
+) -> None:
+    """Draw an authentic Minecraft GUI 2px recessed groove divider line."""
+    draw.line([(x0, y), (x1, y)], fill=(18, 14, 10))
+    draw.line([(x0, y + 1), (x1, y + 1)], fill=(62, 48, 36))
+
+
 # ---------------------------------------------------------------------------
 # Obfuscation & MOTD spans
 # ---------------------------------------------------------------------------
@@ -383,8 +392,27 @@ def _render_spans(
     font_weight: str,
     size: int,
     line_height: int,
+    shadow: bool = False,
 ) -> int:
     """Render a line of styled spans, wrapping to new lines when exceeding *max_width*."""
+    if shadow:
+        shadow_spans = [
+            _Span(
+                s.text,
+                (max(10, s.color[0] // 4), max(10, s.color[1] // 4), max(10, s.color[2] // 4)),
+                s.bold,
+                s.italic,
+                s.underline,
+                s.strikethrough,
+            )
+            for s in spans
+        ]
+        _render_spans(
+            canvas, draw, shadow_spans,
+            x + 2, y + 2, max_width,
+            font_path, font_weight, size, line_height, shadow=False,
+        )
+
     cx = x
     for span in spans:
         weight = "bold" if span.bold else font_weight
@@ -633,7 +661,7 @@ def build_mc_card(
     font_path: str = "",
     font_weight: str = "medium",
 ) -> bytes:
-    """Build a Minecraft server-status card (800 px wide, ~16:9 ratio) and return PNG bytes."""
+    """Build a Minecraft server-status card (800 px wide, ~2.35:1 ratio) and return PNG bytes."""
     # ── 1. Parse MOTD ─────────────────────────────────────────────────────────
     if motd_parsed is not None:
         all_spans = _motd_to_spans(
@@ -646,6 +674,9 @@ def build_mc_card(
 
     # ── 2. Player samples ─────────────────────────────────────────────────────
     sample_names = (player_sample or [])[:12]
+    chip_cols = 3
+    chip_h = 28
+    chip_gap = 8
 
     # ── 3. Layout measurement ─────────────────────────────────────────────────
     f_name   = get_font(FS_NAME,   font_path, "bold")
@@ -655,31 +686,28 @@ def build_mc_card(
     f_footer = get_font(FS_FOOTER, font_path, font_weight)
 
     header_h = ICON_SIZE
-    motd_inner_pad = 16
     motd_content_h = max(len(motd_lines) * LH_MOTD, LH_MOTD)
-    motd_slot_h = motd_inner_pad * 2 + motd_content_h
+    divider_h = 2
 
-    chip_h = 30
-    chip_gap = 8
-    chip_cols = 3
     if sample_names:
         chip_rows = (len(sample_names) + chip_cols - 1) // chip_cols
         chips_total_h = chip_rows * chip_h + (chip_rows - 1) * chip_gap
-        players_content_h = 36 + chips_total_h + 16
+        players_content_h = (FS_LABEL + 8) + chips_total_h
         if players_online > len(sample_names):
-            players_content_h += FS_LABEL + 14
+            players_content_h += (FS_LABEL + 8)
     else:
-        chips_total_h = 0
-        players_content_h = 36 + 46
+        players_content_h = FS_LABEL + 4
 
     footer_row_h = (FS_FOOTER + 10) if extra_info else 0
-    gap = 16
+    gap = 14
 
     base_content_h = (
         SIDE_PAD
         + header_h
         + gap
-        + motd_slot_h
+        + motd_content_h
+        + gap
+        + divider_h
         + gap
         + players_content_h
         + (gap + footer_row_h if footer_row_h else 0)
@@ -688,13 +716,11 @@ def build_mc_card(
 
     card_h = max(MIN_CARD_H, base_content_h)
 
-    # Balance layout if card_h expands beyond base_content_h
-    extra_slack = card_h - base_content_h
-    if extra_slack > 0:
-        # Give half the slack to MOTD breathing space, half to player slot
-        motd_extra = extra_slack // 2
-        motd_slot_h += motd_extra
-        players_content_h += (extra_slack - motd_extra)
+    # Balance layout gracefully (slack breathing room)
+    slack = card_h - base_content_h
+    top_extra = slack // 3
+    mid_extra = slack // 3
+    bot_extra = slack - top_extra - mid_extra
 
     # ── 4. Canvas creation ────────────────────────────────────────────────────
     card = Image.new("RGB", (CARD_W, card_h))
@@ -704,7 +730,7 @@ def build_mc_card(
     _draw_outer_frame(draw, 8, 8, CARD_W - 9, card_h - 9, border_w=2)
 
     # ── 5. Header Section ─────────────────────────────────────────────────────
-    hy = SIDE_PAD
+    hy = SIDE_PAD + top_extra // 2
 
     # Favicon slot
     _draw_slot_box(draw, SIDE_PAD, hy, SIDE_PAD + ICON_SIZE + 4, hy + ICON_SIZE + 4, fill=(18, 18, 26), border_w=2)
@@ -748,57 +774,49 @@ def build_mc_card(
     count_str_w = text_width(count_str, f_count)
     draw.text((cb_x0 + (count_box_w - count_str_w) // 2, hy + 42), count_str, font=f_count, fill=(255, 215, 0))
 
-    # ── 6. MOTD Box ───────────────────────────────────────────────────────────
-    motd_y = hy + header_h + gap
-    motd_x0 = SIDE_PAD
-    motd_x1 = CARD_W - SIDE_PAD
+    # ── 6. MOTD Section ───────────────────────────────────────────────────────
+    # Indent 2px from SIDE_PAD so glyphs optically align with logo interior/border
+    motd_x = SIDE_PAD + 2
+    motd_max_w = (CARD_W - SIDE_PAD) - motd_x
+    motd_y = hy + header_h + gap + (top_extra - top_extra // 2)
 
-    _draw_slot_box(draw, motd_x0, motd_y, motd_x1, motd_y + motd_slot_h, fill=(20, 20, 28), border_w=2)
-
-    # Center lines vertically in motd box if extra space
-    actual_motd_text_h = len(motd_lines) * LH_MOTD
-    cur_y = motd_y + (motd_slot_h - actual_motd_text_h) // 2
-    motd_inner_w = (motd_x1 - motd_x0) - motd_inner_pad * 2
-
+    cur_y = motd_y
     for line_spans in motd_lines:
         if not line_spans:
             cur_y += LH_MOTD
             continue
         cur_y = _render_spans(
             card, draw, line_spans,
-            x=motd_x0 + motd_inner_pad, y=cur_y,
-            max_width=motd_inner_w,
+            x=motd_x, y=cur_y,
+            max_width=motd_max_w,
             font_path=font_path, font_weight=font_weight,
             size=FS_MOTD, line_height=LH_MOTD,
+            shadow=True,
         )
 
-    # ── 7. Players Section ────────────────────────────────────────────────────
-    py = motd_y + motd_slot_h + gap
-    player_box_x0 = SIDE_PAD
-    player_box_x1 = CARD_W - SIDE_PAD
-    player_box_y1 = py + players_content_h
+    # ── 7. MC Groove Divider ──────────────────────────────────────────────────
+    div_y = cur_y + gap // 2 + mid_extra // 2
+    _draw_groove_line(draw, SIDE_PAD, div_y, CARD_W - SIDE_PAD)
 
-    _draw_slot_box(draw, player_box_x0, py, player_box_x1, player_box_y1, fill=(24, 24, 34), border_w=2)
-
-    # Header label in player box
-    p_header = "玩家列表"
-    draw.text((player_box_x0 + 16, py + 12), p_header, font=f_label, fill=(180, 190, 210))
-
-    chip_y0 = py + 36
-    chip_area_w = (player_box_x1 - player_box_x0) - 32
-    col_w = (chip_area_w - (chip_cols - 1) * chip_gap) // chip_cols
+    # ── 8. Players Section ────────────────────────────────────────────────────
+    py = div_y + gap // 2 + (mid_extra - mid_extra // 2) + 2
 
     if sample_names:
+        draw.text((motd_x, py), "在线玩家列表:", font=f_label, fill=(180, 190, 210))
+        chip_y0 = py + FS_LABEL + 8
+        chip_area_w = CARD_W - SIDE_PAD * 2
+        col_w = (chip_area_w - (chip_cols - 1) * chip_gap) // chip_cols
+
         for idx, name in enumerate(sample_names):
             row = idx // chip_cols
             col = idx % chip_cols
-            cx0 = player_box_x0 + 16 + col * (col_w + chip_gap)
+            cx0 = SIDE_PAD + col * (col_w + chip_gap)
             cy0 = chip_y0 + row * (chip_h + chip_gap)
             cx1 = cx0 + col_w
             cy1 = cy0 + chip_h
 
             # Mini slot chip
-            _draw_slot_box(draw, cx0, cy0, cx1, cy1, fill=(34, 34, 48), border_w=1)
+            _draw_slot_box(draw, cx0, cy0, cx1, cy1, fill=(28, 28, 38), border_w=1)
 
             # Offline deterministic 8-bit player head
             p_head_size = 20
@@ -810,31 +828,25 @@ def build_mc_card(
             avail_w = col_w - (p_head_size + 18)
             while pname and text_width(pname, f_pname) > avail_w:
                 pname = pname[:-1]
-            draw.text((name_x, cy0 + 6), pname, font=f_pname, fill=(235, 235, 245))
+            draw.text((name_x, cy0 + (chip_h - FS_PLAYER_NAME) // 2 - 1), pname, font=f_pname, fill=(235, 235, 245))
 
         if players_online > len(sample_names):
             extra_count = players_online - len(sample_names)
             note = f"+ 以及另外 {extra_count} 名在线玩家..."
-            note_y = chip_y0 + chips_total_h + 10
-            draw.text((player_box_x0 + 16, note_y), note, font=f_label, fill=(140, 140, 160))
+            note_y = chip_y0 + chips_total_h + 8
+            draw.text((motd_x, note_y), note, font=f_label, fill=(140, 140, 160))
     else:
-        # Centered stylish empty-state pill
         empty_text = "当前服务器暂无玩家在线" if players_online == 0 else "在线玩家列表已由服主隐藏"
-        pill_w = text_width(empty_text, f_label) + 32
-        pill_h = 30
-        px0 = player_box_x0 + ((player_box_x1 - player_box_x0) - pill_w) // 2
-        py0 = chip_y0 + 4
-        _draw_slot_box(draw, px0, py0, px0 + pill_w, py0 + pill_h, fill=(30, 30, 42), border_w=1)
-        draw.text((px0 + 16, py0 + 6), empty_text, font=f_label, fill=(150, 150, 170))
+        draw.text((motd_x, py), empty_text, font=f_label, fill=(150, 150, 170))
 
-    # ── 8. Extra Info Footer ──────────────────────────────────────────────────
+    # ── 9. Extra Info Footer ──────────────────────────────────────────────────
     if extra_info:
-        fy0 = player_box_y1 + gap // 2
+        fy0 = card_h - SIDE_PAD - footer_row_h
         fy1 = fy0 + footer_row_h
         _draw_slot_box(draw, SIDE_PAD, fy0, CARD_W - SIDE_PAD, fy1, fill=(20, 20, 28), border_w=1)
         draw.text((SIDE_PAD + 14, fy0 + 5), extra_info, font=f_footer, fill=(160, 170, 185))
 
-    # ── 9. Encode ─────────────────────────────────────────────────────────────
+    # ── 10. Encode ────────────────────────────────────────────────────────────
     buf = io.BytesIO()
     card.save(buf, format="PNG", optimize=True)
     return buf.getvalue()
